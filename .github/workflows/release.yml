@@ -109,6 +109,70 @@ jobs:
             dist/*.deb
           if-no-files-found: error
 
+  # ── Tambahan MP AI: artifact linux-aarch64 yang kompatibel OL9 ────────
+  # Job terpisah, bukan entri matrix. `container:` adalah job-level key;
+  # menaruhnya di job `build` akan merusak leg macOS/Windows.
+  # Runner arm64 sudah aarch64, jadi build native (tanpa --target) agar
+  # path staging tetap target/release/.
+  build-arm64:
+    name: Build aarch64-unknown-linux-gnu (OL9)
+    runs-on: ubuntu-24.04-arm
+    container: oraclelinux:9
+    permissions:
+      contents: read
+
+    steps:
+      - name: Bootstrap OL9 toolchain
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            git tar gzip xz curl ca-certificates which findutils \
+            gcc gcc-c++ make pkgconf-pkg-config openssl-devel perl
+
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-unknown-linux-gnu-ol9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web portal (embed via include_dir!)
+        run: cd web && npm ci && npm run build
+
+      - name: Build
+        env:
+          RUSTFOX_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.RUSTFOX_GOOGLE_OAUTH_CLIENT_ID }}
+        run: cargo build --release
+
+      - name: Stage release files
+        run: |
+          mkdir staging
+          cp target/release/rustfox staging/
+          cp config.example.toml staging/
+          cp scripts/install.sh staging/
+          cp -r scripts/services staging/services
+
+      - name: Create archive
+        id: archive
+        run: |
+          safe="${GITHUB_REF_NAME//\//-}"
+          name="rustfox-${safe}-aarch64-unknown-linux-gnu.tar.gz"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          tar -C staging -czf "$name" rustfox config.example.toml install.sh services
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: ${{ steps.archive.outputs.name }}
+          if-no-files-found: error
+
   release:
     name: Create Release
     needs: build
